@@ -1,48 +1,25 @@
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/Twine.h"
-#include "llvm/Analysis/AliasAnalysis.h"
-#include "llvm/Analysis/AssumptionCache.h"
-#include "llvm/Analysis/InlineCost.h"
-#include "llvm/Bitcode/BitcodeReader.h"
-#include "llvm/IR/CallSite.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/IRBuilder.h"
-#include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/LLVMContext.h"
-#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/IR/Value.h"
-#include "llvm/IR/ValueHandle.h"
-#include "llvm/IR/Verifier.h"
 #include "llvm/IRReader/IRReader.h"
-#include "llvm/Pass.h"
-#include "llvm/Support/CommandLine.h"
-#include "llvm/Support/FileSystem.h"
-#include "llvm/Support/ManagedStatic.h"
-#include "llvm/Support/Path.h"
-#include "llvm/Support/PrettyStackTrace.h"
-#include "llvm/Support/Signals.h"
 #include "llvm/Support/SourceMgr.h"
-#include "llvm/Support/SystemUtils.h"
-#include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Transforms/IPO/PassManagerBuilder.h"
-// #include "llvm/Transforms/Obfuscation/Obfuscation.h"
 #include "llvm/Transforms/Utils/Cloning.h"
-#include "llvm/Transforms/Utils/ModuleUtils.h" 
 #include "llvm/Transforms/Utils/ValueMapper.h"
-// #include "llvm/Transforms/Obfuscation/Obfuscation.h"
-// #include "llvm/Transforms/Obfuscation/CryptoUtils.h"
 #include "xVMP.h"
-// #include "llvm/Transforms/Scalar.h"
 #include <assert.h>
 #include <cstdint>
-#include <functional>
+#include <cstdlib>
+#include <cstring>
+#include <ctime>
 #include <map>
 #include <memory>
 #include <string>
@@ -149,7 +126,7 @@ class GOVMTranslator {
         GOVMTranslator(Function * F) {
             this->Mod = F->getParent();
             this->F = F;
-            this->modDataLayout = new DataLayout(this->Mod);
+            this->modDataLayout = &this->Mod->getDataLayout();
 
             // construct function and global variables
             init();
@@ -157,7 +134,7 @@ class GOVMTranslator {
 
         Module * Mod;
         Function * F;
-        DataLayout * modDataLayout;
+        const DataLayout * modDataLayout;
 
         // construct callinst_handler to interprete callinst 
         Function * callinst_handler;
@@ -523,8 +500,7 @@ void GOVMTranslator::setup_callinst_handler() {
         /*Params=*/FuncTy_args,  
         /*isVarArg=*/false);
     // Constant *tmp = Mod->getOrInsertFunction("",FuncTy);
-    Constant *tmp = Function::Create(FuncTy, llvm::GlobalValue::LinkageTypes::InternalLinkage, "vm_interpreter_callinst_dispatch_"+F->getName(), Mod);
-    Function *func =  cast<Function>(tmp);
+    Function *func = Function::Create(FuncTy, llvm::GlobalValue::LinkageTypes::InternalLinkage, "vm_interpreter_callinst_dispatch_"+F->getName(), Mod);
     // func->setLinkage(llvm::GlobalValue::LinkageTypes::InternalLinkage);
 
     // create entry BasicBlock
@@ -539,7 +515,7 @@ void GOVMTranslator::setup_callinst_handler() {
             // targetfunc_id_value
             Value *paramPtr = IRBentryBB.CreateAlloca(Type::getInt64Ty(Mod->getContext()));
             IRBentryBB.CreateStore(tmparg, paramPtr);
-            target_id_value = IRBentryBB.CreateLoad(paramPtr);
+            target_id_value = IRBentryBB.CreateLoad(Type::getInt64Ty(Mod->getContext()), paramPtr);
         } 
     }
 
@@ -585,14 +561,14 @@ void GOVMTranslator::handle_callinst(CallInst *inst, long long curr_func_id) {
         // construct load
         ConstantInt *Zero = ConstantInt::get(Type::getInt64Ty(Mod->getContext()), 0);
         Value * offset_value = ConstantInt::get(Type::getInt64Ty(Mod->getContext()), curroffset);
-        Value * gepinst = IRBcon.CreateGEP(gv_data_seg, {Zero, offset_value}, "");
+        Value * gepinst = IRBcon.CreateGEP(gv_data_seg->getValueType(), gv_data_seg, {Zero, offset_value}, "");
 
         // convert gep from i8* to value->getType() *
         PointerType * target_ptr_type = PointerType::get(currarg->getType(), cast<PointerType>(gepinst->getType())->getAddressSpace());
         Value * ptr = IRBcon.CreatePointerCast(gepinst, target_ptr_type);
         
         // load from gv_data_seg
-        Value * arg = IRBcon.CreateLoad(ptr);
+        Value * arg = IRBcon.CreateLoad(currarg->getType(), ptr);
 
         target_func_args.push_back(arg);
     }
@@ -619,18 +595,18 @@ void GOVMTranslator::handle_callinst(CallInst *inst, long long curr_func_id) {
         // load value from gv_data_seg
         ConstantInt *Zero = ConstantInt::get(Type::getInt64Ty(Mod->getContext()), 0);
         Value * offset_value = ConstantInt::get(Type::getInt64Ty(Mod->getContext()), called_value_offset);
-        Value * gepinst = IRBcallFunction.CreateGEP(gv_data_seg, {Zero, offset_value}, "");
+        Value * gepinst = IRBcallFunction.CreateGEP(gv_data_seg->getValueType(), gv_data_seg, {Zero, offset_value}, "");
 
         // convert gep from i8* to value->getType() *
         PointerType * target_ptr_type = PointerType::get(called_value->getType(), cast<PointerType>(gepinst->getType())->getAddressSpace());
         Value * ptr = IRBcallFunction.CreatePointerCast(gepinst, target_ptr_type);
-        
+
         // load from gv_data_seg
-        Value * value = IRBcallFunction.CreateLoad(ptr);
+        Value * value = IRBcallFunction.CreateLoad(called_value->getType(), ptr);
 
 
         // indirect call
-        resultValue = IRBcallFunction.CreateCall(value, ArrayRef<Value *>(target_func_args));
+        resultValue = IRBcallFunction.CreateCall(inst->getFunctionType(), value, ArrayRef<Value *>(target_func_args));
     }
 
     // if return not void, store it to gv_data_seg
@@ -640,7 +616,7 @@ void GOVMTranslator::handle_callinst(CallInst *inst, long long curr_func_id) {
         // load value from gv_data_seg
         ConstantInt *Zero = ConstantInt::get(Type::getInt64Ty(Mod->getContext()), 0);
         Value * offset_value = ConstantInt::get(Type::getInt64Ty(Mod->getContext()), result_value_offset);
-        Value * gepinst = IRBcallFunction.CreateGEP(gv_data_seg, {Zero, offset_value}, "");
+        Value * gepinst = IRBcallFunction.CreateGEP(gv_data_seg->getValueType(), gv_data_seg, {Zero, offset_value}, "");
 
         // convert gep from i8* to value->getType() *
         PointerType * target_ptr_type = PointerType::get(resultValue->getType(), cast<PointerType>(gepinst->getType())->getAddressSpace());
@@ -1060,14 +1036,14 @@ void GOVMTranslator::run(){
 
         for(auto ins = bbl->begin(); ins != bbl->end(); ins++){
 
-            Instruction *inst = dyn_cast<Instruction>(ins);
+            Instruction *inst = &*ins;
 
             for (unsigned idx = 0; idx < inst->getNumOperands(); idx++) {
                 if (ConstantExpr * Op = dyn_cast<ConstantExpr>(inst->getOperand(idx))) {
                     // we found a ConstantExpr
                     // convert ConstantExpr to a equal instruction
                     Instruction * const_inst = Op->getAsInstruction();
-                    const_inst->insertBefore(inst);
+                    const_inst->insertBefore(inst->getIterator());
                     // There is a problem, PHINode must at first instruction of a basicblock, unpack all constantExpr is a potential problem
                     // God bless there is not a constantExpr in PHINode
 
@@ -1147,13 +1123,13 @@ class GOVMModifier {
         GOVMModifier(Function * F, std::map<GlobalVariable *, int> *gv_value_map) {
             this->Mod = F->getParent();
             this->F = F;
-            this->modDataLayout = new DataLayout(this->Mod);
+            this->modDataLayout = &this->Mod->getDataLayout();
             this->gv_value_map = gv_value_map;
         }
 
         Module * Mod;
         Function * F;
-        DataLayout * modDataLayout;
+        const DataLayout * modDataLayout;
 
         std::map<GlobalVariable *, int> *gv_value_map;
 
@@ -1203,7 +1179,7 @@ void GOVMModifier::run() {
         
         Value *paramPtr = irbuilder.CreateAlloca(tmparg->getType());
         irbuilder.CreateStore(tmparg, paramPtr);
-        Value *currvalue = irbuilder.CreateLoad(paramPtr);
+        Value *currvalue = irbuilder.CreateLoad(tmparg->getType(), paramPtr);
 
         // insert to args_map
         args_map.push_back(pair<Value *, int>(currvalue, arg_offset));
@@ -1233,7 +1209,7 @@ void GOVMModifier::run() {
         // create gep: data_seg + offset
         ConstantInt *Zero = ConstantInt::get(Type::getInt64Ty(Mod->getContext()), 0);
         Value * offset_value = ConstantInt::get(Type::getInt64Ty(Mod->getContext()), offset);
-        Value * gepinst = irbuilder.CreateGEP(gv_data_seg, {Zero, offset_value}, "");
+        Value * gepinst = irbuilder.CreateGEP(gv_data_seg->getValueType(), gv_data_seg, {Zero, offset_value}, "");
 
         // convert gep i8* to i64*
         PointerType * target_ptr_type = PointerType::get(gv_addr_int->getType(), cast<PointerType>(gepinst->getType())->getAddressSpace());
@@ -1254,7 +1230,7 @@ void GOVMModifier::run() {
         // GEP get ptr point to offset
         ConstantInt *Zero = ConstantInt::get(Type::getInt64Ty(F->getContext()), 0);
         Value * const_curr_value_offset = ConstantInt::get(Type::getInt64Ty(F->getContext()), offset);
-        Value * gepinst = irbuilder.CreateGEP(gv_data_seg, {Zero, const_curr_value_offset}, "");
+        Value * gepinst = irbuilder.CreateGEP(gv_data_seg->getValueType(), gv_data_seg, {Zero, const_curr_value_offset}, "");
 
         // cast gep_ptr to value->type
         PointerType * target_ptr_type = PointerType::get(value->getType(), cast<PointerType>(gepinst->getType())->getAddressSpace());
@@ -1282,12 +1258,12 @@ void GOVMModifier::run() {
 
         // GEP get ptr point to offset
         ConstantInt *Zero = ConstantInt::get(Type::getInt64Ty(F->getContext()), 0);
-        Value * gepinst = irbuilder.CreateGEP(gv_data_seg, {Zero, Zero}, "");
+        Value * gepinst = irbuilder.CreateGEP(gv_data_seg->getValueType(), gv_data_seg, {Zero, Zero}, "");
         // cast gep_ptr to value->type
         PointerType * target_ptr_type = PointerType::get(F->getReturnType(), cast<PointerType>(gepinst->getType())->getAddressSpace());
         Value * ptr = irbuilder.CreatePointerCast(gepinst, target_ptr_type);
         // load return value
-        Value * retval = irbuilder.CreateLoad(ptr);
+        Value * retval = irbuilder.CreateLoad(F->getReturnType(), ptr);
 
         ReturnInst *inst_ret = ReturnInst::Create(this->Mod->getContext(), retval, ret_bbl);
     }
@@ -1326,7 +1302,7 @@ class GOVMInterpreter {
         GOVMInterpreter(Function * F, Function * callinst_handler) {
             this->Mod = F->getParent();
             this->F = F;
-            this->modDataLayout = new DataLayout(this->Mod);
+            this->modDataLayout = &this->Mod->getDataLayout();
             this->callinst_handler = callinst_handler;
 
             construct_gv();
@@ -1334,7 +1310,7 @@ class GOVMInterpreter {
 
         Module * Mod;
         Function * F;
-        DataLayout * modDataLayout;
+        const DataLayout * modDataLayout;
 
         Function *callinst_handler;
 
@@ -1500,8 +1476,8 @@ void GOVMInterpreter::run() {
 
             // if(F->getName().str() == "unpack_code"){
             if(is_interpreter_function(fun)) {
-                Constant *tmp = Mod->getOrInsertFunction(fun->getName().str(), fun->getFunctionType());
-                Function *NewF =  cast<Function>(tmp);
+                FunctionCallee callee = Mod->getOrInsertFunction(fun->getName().str(), fun->getFunctionType());
+                Function *NewF =  cast<Function>(callee.getCallee());
                 NewF->setLinkage(llvm::GlobalValue::LinkageTypes::InternalLinkage);
 
 
@@ -1519,7 +1495,7 @@ void GOVMInterpreter::run() {
 
                 
 
-                CloneFunctionInto(NewF, fun, VMap, true, returns);
+                CloneFunctionInto(NewF, fun, VMap, CloneFunctionChangeType::DifferentModule, &returns);
 
                 // set a new name
                 NewF->setName(fun->getName()+"_"+F->getName());
@@ -1552,7 +1528,7 @@ void GOVMInterpreter::run() {
         bool flag = true;
         for(auto Func = interpreter_module->begin(), Funcend = interpreter_module->end();Func!=Funcend;++Func) {
 
-            Function *fun = dyn_cast<Function>(&*Func);
+            Function *fun = &*Func;
             
             if(fun->use_empty()) {
                 errs() << "[*] Removing function: " << fun->getName().str() << "\n";
@@ -1587,27 +1563,17 @@ namespace {
                 // Get the struct
                 if (ConstantStruct *structAn =
                         dyn_cast<ConstantStruct>(ca->getOperand(i))) {
-                if (ConstantExpr *expr =
-                        dyn_cast<ConstantExpr>(structAn->getOperand(0))) {
-                    // If it's a bitcast we can check if the annotation is concerning
-                    // the current function
-                    if (expr->getOpcode() == Instruction::BitCast &&
-                        expr->getOperand(0) == f) {
-                    ConstantExpr *note = cast<ConstantExpr>(structAn->getOperand(1));
-                    // If it's a GetElementPtr, that means we found the variable
-                    // containing the annotations
-                    if (note->getOpcode() == Instruction::GetElementPtr) {
-                        if (GlobalVariable *annoteStr =
-                                dyn_cast<GlobalVariable>(note->getOperand(0))) {
-                        if (ConstantDataSequential *data =
-                                dyn_cast<ConstantDataSequential>(
-                                    annoteStr->getInitializer())) {
-                            if (data->isString()) {
+                if (structAn->getOperand(0)->stripPointerCasts() != f)
+                    continue;
+                Value *note = structAn->getOperand(1)->stripPointerCasts();
+                if (GlobalVariable *annoteStr =
+                        dyn_cast<GlobalVariable>(note)) {
+                    if (ConstantDataSequential *data =
+                            dyn_cast<ConstantDataSequential>(
+                                annoteStr->getInitializer())) {
+                        if (data->isString()) {
                             annotation += data->getAsString().lower() + " ";
-                            }
                         }
-                        }
-                    }
                     }
                 }
                 }
@@ -1622,8 +1588,7 @@ namespace {
         std::string noattr = "cpp_no" + attribute;
         for(auto Func = M->begin();Func!=M->end();++Func)
         {
-            if(Function * f = dyn_cast<Function>(Func))
-            {
+            Function * f = &*Func;
             if (readAnnotate(f).find(attr) != std::string::npos)
             {
                 return true;
@@ -1631,7 +1596,6 @@ namespace {
             if (readAnnotate(f).find(noattr) != std::string::npos)
             {
                 return false;
-            }
             }
         }
         return global_flag;
@@ -1672,51 +1636,52 @@ namespace {
         return false;
     }
 
-struct VMProtect : public ModulePass {
-  static char ID;
-  bool flag;
-  VMProtect() : ModulePass(ID) {}
-  VMProtect(bool flag): ModulePass(ID)
-  {
-    this->flag = flag;
-  }
-  virtual bool runOnModule(Module &M)
-  {
-      for(auto Func = M.begin();Func!=M.end();++Func)
-      {
-        Function *F = &*Func;
-        if(toObfuscateFunction(this->flag,F,"vmp"))
-        {
-          if(F->isVarArg())
-            continue;
-          
-          govm_interpreter = nullptr;
-          gv_code_seg = nullptr;
-          gv_data_seg = nullptr;
-          ip = nullptr;
-          data_seg_addr = nullptr;
-
-          GOVMTranslator * translator = new GOVMTranslator(F);
-          translator->run();
-
-          GOVMInterpreter * interpreter = new GOVMInterpreter(F, translator->get_callinst_handler());
-          interpreter->run();
-
-          GOVMModifier * modifier = new GOVMModifier(F, translator->get_gv_value_map());
-          modifier->run();
+    bool is_already_virtualized(Function *F) {
+        for (BasicBlock &BB : *F) {
+            for (Instruction &I : BB) {
+                CallInst *CI = dyn_cast<CallInst>(&I);
+                if (!CI)
+                    continue;
+                Function *callee = CI->getCalledFunction();
+                if (callee && callee->getName().starts_with("vm_interpreter"))
+                    return true;
+            }
         }
-      }
-      return true;
-
-  }
-
-
-}; // end of struct InlineFunction
+        return false;
+    }
 }  // end of anonymous namespace
 
-char VMProtect::ID = 0;
-static RegisterPass<VMProtect> X("xVMP", "xVMP",false,true);
-Pass *llvm::createVMProtect(bool flag) {
-  return new VMProtect(flag);
+PreservedAnalyses XVMPPass::run(Module &M, ModuleAnalysisManager &) {
+    SmallVector<Function *, 4> candidates;
+    for (Function &F : M) {
+        if (is_interpreter_function(&F))
+            continue;
+        if (is_already_virtualized(&F))
+            continue;
+        if (toObfuscateFunction(false, &F, "vmp"))
+            candidates.push_back(&F);
+    }
+
+    for (Function *F : candidates) {
+        if (F->isVarArg())
+            continue;
+
+        govm_interpreter = nullptr;
+        gv_code_seg = nullptr;
+        gv_data_seg = nullptr;
+        ip = nullptr;
+        data_seg_addr = nullptr;
+
+        GOVMTranslator * translator = new GOVMTranslator(F);
+        translator->run();
+
+        GOVMInterpreter * interpreter = new GOVMInterpreter(F, translator->get_callinst_handler());
+        interpreter->run();
+
+        GOVMModifier * modifier = new GOVMModifier(F, translator->get_gv_value_map());
+        modifier->run();
+    }
+
+    return candidates.empty() ? PreservedAnalyses::all() : PreservedAnalyses::none();
 }
 
