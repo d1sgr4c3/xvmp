@@ -1,0 +1,7 @@
+gen/
+*.bc
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+libxVMP.so

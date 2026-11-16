@@ -15,6 +15,7 @@
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/ValueMapper.h"
 #include "xVMP.h"
+#include "xvmp_opcodes.h"
 #include <assert.h>
 #include <cstdint>
 #include <cstdlib>
@@ -46,25 +47,6 @@ GlobalVariable * code_seg_addr;
 // Interpreter
 // extern Function * govm_interpreter;
 Function * govm_interpreter;
-
-
-// Opcode 
-#define ALLOCA_OP           0x01
-#define LOAD_OP             0x02
-#define STORE_OP            0x03
-#define BinaryOperator_OP   0x04
-#define GEP_OP              0x05
-#define CMP_OP              0x06
-#define CAST_OP             0x07
-#define BR_OP               0x08
-#define Call_OP             0x09
-#define Ret_OP              0x0A
-
-#define OP_TOTAL            0x0A
-
-
-// pointer size
-#define POINTER_SIZE 8
 
 
 /* ********************************************************************
@@ -729,7 +711,7 @@ void GOVMTranslator::handle_inst(Instruction *ins) {
         
         std::vector<uint8_t> packed_res = GET_PACK_VALUE(inst);
 
-        std::vector<uint8_t> packed_binaryOpcode = {static_cast<uint8_t>(inst->getOpcode())};
+        std::vector<uint8_t> packed_binaryOpcode = {static_cast<uint8_t>(XVMP_BINOP_REMAP[inst->getOpcode()])};
 
         std::vector<uint8_t> packed_op0 = GET_PACK_VALUE(inst->getOperand(0));
         std::vector<uint8_t> packed_op1 = GET_PACK_VALUE(inst->getOperand(1));
@@ -764,7 +746,7 @@ void GOVMTranslator::handle_inst(Instruction *ins) {
         std::vector<uint8_t> packed_op0 = GET_PACK_VALUE(inst->getOperand(0));
         std::vector<uint8_t> packed_op1 = GET_PACK_VALUE(inst->getOperand(1));
 
-        std::vector<uint8_t> packed_predicate = {static_cast<uint8_t>(inst->getPredicate())};
+        std::vector<uint8_t> packed_predicate = {static_cast<uint8_t>(XVMP_ICMP_REMAP[inst->getPredicate()])};
 
         std::vector<uint8_t> hex_code;
         ins_to_hex(hex_code, pack_op(CMP_OP), packed_predicate, packed_res, packed_op0, packed_op1);
@@ -871,12 +853,12 @@ void GOVMTranslator::handle_inst(Instruction *ins) {
         std::vector<uint8_t> padding = pack(0, POINTER_SIZE);
 
         if (inst->isUnconditional()) {
-            hex_code.push_back(0);
+            hex_code.push_back(BR_TYPE_UNCOND);
             // errs() << vm_code.size()+2 << "\n";
             br_map.push_back(pair<int, BasicBlock *>(vm_code.size()+hex_code.size(), inst->getSuccessor(0)));          // fill after traverse whole function
             hex_code.insert(hex_code.end(), padding.begin(), padding.end());
         } else {
-            hex_code.push_back(1);
+            hex_code.push_back(BR_TYPE_COND);
             // condition
             std::vector<uint8_t> pack_condition = packValue(inst->getCondition(), &value_map);
             hex_code.insert(hex_code.end(), pack_condition.begin(), pack_condition.end());

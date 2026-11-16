@@ -1,16 +1,21 @@
 #!/bin/bash
 set -ex
 
-ROOT_PATH=$(cd $(dirname $0)/../; pwd)
-# echo $ROOT_PATH
+ROOT_PATH=$(cd "$(dirname "$0")/.." && pwd)
+CLANG="${XVMP_CLANG:-clang}"
+OUT_DIR="${XVMP_OUT_DIR:-$ROOT_PATH/manual-build}"
+SEED="${XVMP_VM_SEED:-}"
 
-# use clang-8 to compile interpreter first.
-# CLANG_PATH=/ollvm/ollvm/llvm-8/llvm-project/build/bin/
-CLANG_PATH=./build/bin/
+mkdir -p "$OUT_DIR/gen"
 
-$CLANG_PATH/clang-8 -O0 -Xclang -disable-O0-optnone -emit-llvm -c $ROOT_PATH/src/xVMPInterpreter/xVMPInterpreter.c -o /tmp/xVMPInterpreter.bc
-$CLANG_PATH/llvm-dis /tmp/xVMPInterpreter.bc -o /tmp/xVMPInterpreter.ll
+if [ -n "$SEED" ]; then
+    python3 "$ROOT_PATH/scripts/gen_vm_config.py" --seed "$SEED" --out "$OUT_DIR/gen/xvmp_opcodes.h"
+else
+    python3 "$ROOT_PATH/scripts/gen_vm_config.py" --out "$OUT_DIR/gen/xvmp_opcodes.h"
+fi
 
-python2 $ROOT_PATH/scripts/interpreter-ir2str.py
+"$CLANG" -O0 -Xclang -disable-O0-optnone -emit-llvm -I "$OUT_DIR/gen" -c "$ROOT_PATH/vm/xVMPInterpreter.c" -o "$OUT_DIR/xVMPInterpreter.bc"
 
+python3 "$ROOT_PATH/scripts/interpreter-ir2str.py" "$OUT_DIR/xVMPInterpreter.bc" "$OUT_DIR/gen/vm.h"
 
+llvm-dis "$OUT_DIR/xVMPInterpreter.bc" -o "$OUT_DIR/xVMPInterpreter.ll" || true

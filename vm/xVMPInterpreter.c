@@ -416,7 +416,7 @@ void br_handler() {
 
     uint64_t target_addr = 0;
 
-    if (br_type == 0) {
+    if (br_type == BR_TYPE_UNCOND) {
         // uncondition br
         target_addr = unpack_code(POINTER_SIZE);
     }
