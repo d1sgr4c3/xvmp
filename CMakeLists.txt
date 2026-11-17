@@ -48,7 +48,7 @@ set(XVMP_VM_H ${XVMP_GEN_DIR}/vm.h)
 set(XVMP_GEN_OPCODES_CMD
     ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/gen_vm_config.py
     --out ${XVMP_OPCODES_H})
-if(XVMP_VM_SEED)
+if(NOT "${XVMP_VM_SEED}" STREQUAL "")
   list(APPEND XVMP_GEN_OPCODES_CMD --seed ${XVMP_VM_SEED})
 endif()
 

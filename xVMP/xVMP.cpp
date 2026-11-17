@@ -16,6 +16,7 @@
 #include "llvm/Transforms/Utils/ValueMapper.h"
 #include "xVMP.h"
 #include "xvmp_opcodes.h"
+#include <algorithm>
 #include <assert.h>
 #include <cstdint>
 #include <cstdlib>
@@ -23,6 +24,7 @@
 #include <ctime>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -97,7 +99,9 @@ std::string *LogUtils::log_title(const char *title) {
 */
 
 
+#ifdef XVMP_DEBUG
 #define GOVTRANSLATOR_DEBUG
+#endif
 
 /***
  * The main class that modify the callsite of vm-function.
@@ -315,30 +319,25 @@ class GOVMTranslator {
             int type_size = modDataLayout->getTypeAllocSize(type);
             int64_t value = 0;
 
-            // unsupport float
-            // 
-            // if(type->isDoubleTy()){
-            //     ConstantFP* FP = dyn_cast<ConstantFP>(const_value);
-            //     value = FP->getValueAPF().bitcastToAPInt();
-            // }
-            // else if(type->isFloatTy()){
-            //     ConstantFP* FP = dyn_cast<ConstantFP>(const_value);
-            //     value = FP->getValueAPF().bitcastToAPInt();
-            // }
-
-            if (type->isIntegerTy()){
-                ConstantInt* CI = dyn_cast<ConstantInt>(const_value);
+            if (isa<UndefValue>(const_value) || isa<PoisonValue>(const_value)) {
+                value = 0;
+            }
+            else if (type->isIntegerTy()){
+                ConstantInt* CI = cast<ConstantInt>(const_value);
                 if (CI->getBitWidth() <= 64) {
                     value = CI->getSExtValue();
                 }
             }
-            else if (ConstantPointerNull *CPN = dyn_cast<ConstantPointerNull>(const_value)) {
+            else if (isa<ConstantPointerNull>(const_value)) {
                 // handle i8* null
                 value = 0;
             }
+            else if (isa<ConstantAggregateZero>(const_value)) {
+                value = 0;
+            }
             else {
-                errs() << "Unsport const value: " << *const_value << "\n";
-                assert(0);
+                errs() << "xvmp: unsupported constant: " << *const_value << "\n";
+                value = 0;
             }
 
             res = pack(value, type_size);
@@ -529,7 +528,7 @@ void GOVMTranslator::handle_callinst(CallInst *inst, long long curr_func_id) {
 
     // firstly,  we need to unpack function args
     std::vector<Value *> target_func_args;
-    for (unsigned idx = 0; idx < inst->getNumArgOperands(); idx++){
+    for (unsigned idx = 0; idx < inst->arg_size(); idx++){
         Value * currarg = inst->getArgOperand(idx);
 
         // if value is a constant, use it directly
@@ -546,7 +545,7 @@ void GOVMTranslator::handle_callinst(CallInst *inst, long long curr_func_id) {
         Value * gepinst = IRBcon.CreateGEP(gv_data_seg->getValueType(), gv_data_seg, {Zero, offset_value}, "");
 
         // convert gep from i8* to value->getType() *
-        PointerType * target_ptr_type = PointerType::get(currarg->getType(), cast<PointerType>(gepinst->getType())->getAddressSpace());
+        PointerType * target_ptr_type = PointerType::get(currarg->getContext(), cast<PointerType>(gepinst->getType())->getAddressSpace());
         Value * ptr = IRBcon.CreatePointerCast(gepinst, target_ptr_type);
         
         // load from gv_data_seg
@@ -571,7 +570,7 @@ void GOVMTranslator::handle_callinst(CallInst *inst, long long curr_func_id) {
     }
     else {
         // indirect call
-        Value *called_value = inst->getCalledValue();
+        Value *called_value = inst->getCalledOperand();
         unsigned called_value_offset = value_map[called_value];
 
         // load value from gv_data_seg
@@ -580,7 +579,7 @@ void GOVMTranslator::handle_callinst(CallInst *inst, long long curr_func_id) {
         Value * gepinst = IRBcallFunction.CreateGEP(gv_data_seg->getValueType(), gv_data_seg, {Zero, offset_value}, "");
 
         // convert gep from i8* to value->getType() *
-        PointerType * target_ptr_type = PointerType::get(called_value->getType(), cast<PointerType>(gepinst->getType())->getAddressSpace());
+        PointerType * target_ptr_type = PointerType::get(called_value->getContext(), cast<PointerType>(gepinst->getType())->getAddressSpace());
         Value * ptr = IRBcallFunction.CreatePointerCast(gepinst, target_ptr_type);
 
         // load from gv_data_seg
@@ -601,7 +600,7 @@ void GOVMTranslator::handle_callinst(CallInst *inst, long long curr_func_id) {
         Value * gepinst = IRBcallFunction.CreateGEP(gv_data_seg->getValueType(), gv_data_seg, {Zero, offset_value}, "");
 
         // convert gep from i8* to value->getType() *
-        PointerType * target_ptr_type = PointerType::get(resultValue->getType(), cast<PointerType>(gepinst->getType())->getAddressSpace());
+        PointerType * target_ptr_type = PointerType::get(resultValue->getContext(), cast<PointerType>(gepinst->getType())->getAddressSpace());
         Value * ptr = IRBcallFunction.CreatePointerCast(gepinst, target_ptr_type);
 
         // store
@@ -800,7 +799,7 @@ void GOVMTranslator::handle_inst(Instruction *ins) {
 
             // Construct const-offset manually
             packed_value = {0, 0};
-            std:vector<uint8_t> tmp = pack(curr_element_offset, POINTER_SIZE);
+            std::vector<uint8_t> tmp = pack(curr_element_offset, POINTER_SIZE);
             packed_value.insert(packed_value.end(), tmp.begin(), tmp.end());
         } else {
             // is array type
@@ -911,11 +910,22 @@ void GOVMTranslator::handle_inst(Instruction *ins) {
     }
 
     else if(CallInst * inst = dyn_cast<CallInst>(ins)) {
-        
+
         // current function id
         long long curr_func_id = this->callinst_handler_curr_idx ++;
-        
+
         std::vector<uint8_t> packed_funcid = pack(curr_func_id, POINTER_SIZE);
+
+        for (unsigned idx = 0; idx < inst->arg_size(); idx++) {
+            Value *currarg = inst->getArgOperand(idx);
+            if (GlobalVariable *GV = dyn_cast<GlobalVariable>(currarg)) {
+                if (value_map.find(GV) == value_map.end()) {
+                    insert_to_value_map(&value_map, GV, curr_data_offset);
+                    gv_value_map.insert(pair<GlobalVariable *, int>(GV, curr_data_offset));
+                    curr_data_offset += POINTER_SIZE;
+                }
+            }
+        }
         
         // check if this callsite return a void
         std::vector<uint8_t> packed_res;
@@ -971,7 +981,9 @@ void GOVMTranslator::run(){
     // reg2mempass->runOnFunction(*F);
 
     // F->dump();
+    #ifdef XVMP_DEBUG
     errs() << "[*] to-be-protect function: \n" << *F << "\n";
+    #endif
 
     // if return not void, alloca a memory
     if (!F->getReturnType()->isVoidTy()) {
@@ -1042,15 +1054,19 @@ void GOVMTranslator::run(){
         vm_code_seed_map.insert(pair<uint32_t, pair<uint32_t, uint32_t>>(vm_code_seed, pair<uint32_t, uint32_t>(currbb_begin, currbb_end)));
     }
 
+    #ifdef XVMP_DEBUG
     errs() << "[*] gv_value_map:\n";
     errs() << "size: " << gv_value_map.size() << "\n";
     for (auto p: gv_value_map) {
         errs() << *(p.first) << "\t" << p.second << "\n";
     }
     errs() << "\n";
+    #endif
 
 
+    #ifdef XVMP_DEBUG
     errs() << "[*] Fill br_map\n";
+    #endif
     // fill br map
     for(auto it=br_map.rbegin(); it!=br_map.rend(); it++) {
         int code_pos = it->first;
@@ -1059,18 +1075,22 @@ void GOVMTranslator::run(){
         std::vector<uint8_t> bb_addr = pack(basicblock_map[target_bb], POINTER_SIZE);
         std::copy(bb_addr.begin(), bb_addr.end(), vm_code.begin()+code_pos);
     }
+    #ifdef XVMP_DEBUG
     errs() << "\n";
+    #endif
 
     /* vm_code finish */
 
     // encrypt vm_code with basicblock seed
     encrypt_vm_code();
 
+    #ifdef XVMP_DEBUG
     // display final hex code
     errs() << "[*] Hex code: \n";
     dump_vector(vm_code);
     errs() << "\n";
     errs() << "[*] Hex code size: " << vm_code.size() << "\n";
+    #endif
 
     construct_gv();
 
@@ -1082,7 +1102,9 @@ void GOVMTranslator::run(){
     // callinst_handler fini
     finish_callinst_handler();
 
+    #ifdef XVMP_DEBUG
     errs() << *LogUtils::log_title("Translate Finish");
+    #endif
 
 
 }
@@ -1094,7 +1116,9 @@ void GOVMTranslator::run(){
 ***********************************************************************
 */
 
+#ifdef XVMP_DEBUG
 #define GOVMMODIFIER_DEBUG
+#endif
 
 /***
  * The main class that modify the callsite of vm-function.
@@ -1183,7 +1207,9 @@ void GOVMModifier::run() {
         GlobalVariable *gv = p.first;
         int offset = p.second;
 
+        #ifdef XVMP_DEBUG
         errs() << "[*] storing GlobalVariable: " << *gv << "\t" << offset << "\n";
+        #endif
 
         // convert pointer to int64
         Value * gv_addr_int = irbuilder.CreatePtrToInt(gv,Type::getInt64Ty(Mod->getContext()));
@@ -1194,7 +1220,7 @@ void GOVMModifier::run() {
         Value * gepinst = irbuilder.CreateGEP(gv_data_seg->getValueType(), gv_data_seg, {Zero, offset_value}, "");
 
         // convert gep i8* to i64*
-        PointerType * target_ptr_type = PointerType::get(gv_addr_int->getType(), cast<PointerType>(gepinst->getType())->getAddressSpace());
+        PointerType * target_ptr_type = PointerType::get(gv_addr_int->getContext(), cast<PointerType>(gepinst->getType())->getAddressSpace());
         Value * ptr = irbuilder.CreatePointerCast(gepinst, target_ptr_type);
 
         // store gv_addr_int to data_seg+offset
@@ -1207,7 +1233,9 @@ void GOVMModifier::run() {
         Value * value = p.first;
         int offset = p.second;
         
+        #ifdef XVMP_DEBUG
         errs() << "[*] storing value: " << *value << "\t" << offset << "\n";
+        #endif
 
         // GEP get ptr point to offset
         ConstantInt *Zero = ConstantInt::get(Type::getInt64Ty(F->getContext()), 0);
@@ -1215,7 +1243,7 @@ void GOVMModifier::run() {
         Value * gepinst = irbuilder.CreateGEP(gv_data_seg->getValueType(), gv_data_seg, {Zero, const_curr_value_offset}, "");
 
         // cast gep_ptr to value->type
-        PointerType * target_ptr_type = PointerType::get(value->getType(), cast<PointerType>(gepinst->getType())->getAddressSpace());
+        PointerType * target_ptr_type = PointerType::get(value->getContext(), cast<PointerType>(gepinst->getType())->getAddressSpace());
         Value * ptr = irbuilder.CreatePointerCast(gepinst, target_ptr_type);
         
         // store value to data_seg+offset
@@ -1242,7 +1270,7 @@ void GOVMModifier::run() {
         ConstantInt *Zero = ConstantInt::get(Type::getInt64Ty(F->getContext()), 0);
         Value * gepinst = irbuilder.CreateGEP(gv_data_seg->getValueType(), gv_data_seg, {Zero, Zero}, "");
         // cast gep_ptr to value->type
-        PointerType * target_ptr_type = PointerType::get(F->getReturnType(), cast<PointerType>(gepinst->getType())->getAddressSpace());
+        PointerType * target_ptr_type = PointerType::get(F->getContext(), cast<PointerType>(gepinst->getType())->getAddressSpace());
         Value * ptr = irbuilder.CreatePointerCast(gepinst, target_ptr_type);
         // load return value
         Value * retval = irbuilder.CreateLoad(F->getReturnType(), ptr);
@@ -1260,7 +1288,9 @@ void GOVMModifier::run() {
     // assert(F->getReturnType()->isVoidTy());
 
 
+    #ifdef XVMP_DEBUG
     errs() << *LogUtils::log_title("Modify finish");
+    #endif
 
 
 }
@@ -1272,7 +1302,9 @@ void GOVMModifier::run() {
 ***********************************************************************
 */
 
+#ifdef XVMP_DEBUG
 #define GOVMINTERPRETER_DEBUG
+#endif
 
 
 /***
@@ -1422,7 +1454,9 @@ void GOVMInterpreter::construct_gv() {
 // Function *govm_interpreter;
 
 void GOVMInterpreter::run() {
+    #ifdef XVMP_DEBUG
     errs() << *LogUtils::log_title("xVMPInterpreter") << "\n";
+    #endif
 
     Module *interpreter_module = llvm_parse_bitcode_from_string();
     assert(interpreter_module);
@@ -1432,20 +1466,26 @@ void GOVMInterpreter::run() {
     std::vector<std::string> gv_list = {"ip",  "data_seg_addr", "code_seg_addr", "opcode_xorshift32_state", "vm_code_state"};
     std::vector<GlobalVariable *> new_gv_list = {ip,  data_seg_addr, code_seg_addr, opcode_xorshift32_state, vm_code_state};
     for (unsigned i = 0; i < gv_list.size(); i++) {
+        #ifdef XVMP_DEBUG
         errs() << "[*] Replacing GlobalVariable: " << *new_gv_list[i] << "\n";
+        #endif
         GlobalVariable *old_gv = interpreter_module->getGlobalVariable(gv_list[i]);
         // GlobalVariable *new_gv = Mod->getGlobalVariable(name);
         GlobalVariable *new_gv = new_gv_list[i];
 
+        #ifdef XVMP_DEBUG
         errs() << "old_gv->getType(): " << *old_gv->getType() << "\n";
         errs() << "new_gv->getType(): " << *new_gv->getType() << "\n";
+        #endif
 
         old_gv->replaceAllUsesWith(new_gv);
     }
 
     // replace call_handler
     Function *old_func = interpreter_module->getFunction("call_handler");
+    #ifdef XVMP_DEBUG
     errs() << "[*] Replacing function: " << old_func->getName().str() << "\n";
+    #endif
     old_func->replaceAllUsesWith(callinst_handler);
 
 
@@ -1477,12 +1517,14 @@ void GOVMInterpreter::run() {
 
                 
 
-                CloneFunctionInto(NewF, fun, VMap, CloneFunctionChangeType::DifferentModule, &returns);
+                CloneFunctionInto(NewF, fun, VMap, CloneFunctionChangeType::DifferentModule, returns);
 
                 // set a new name
                 NewF->setName(fun->getName()+"_"+F->getName());
 
+                #ifdef XVMP_DEBUG
                 errs() << "[*] Function: " << fun->getName().str() << " Clone finished!\n";
+                #endif
 
 
                 // collect all references
@@ -1495,7 +1537,9 @@ void GOVMInterpreter::run() {
 
                 // replace references
                 for (CallInst *CI: F_users) {
+                    #ifdef XVMP_DEBUG
                     errs() << "[*] Replacing references: " << *CI << "\n";
+                    #endif
                     CI->setCalledFunction(NewF);
                 }
                 
@@ -1513,7 +1557,9 @@ void GOVMInterpreter::run() {
             Function *fun = &*Func;
             
             if(fun->use_empty()) {
+                #ifdef XVMP_DEBUG
                 errs() << "[*] Removing function: " << fun->getName().str() << "\n";
+                #endif
                 flag = false;
                 fun->eraseFromParent();
                 break;
@@ -1526,7 +1572,9 @@ void GOVMInterpreter::run() {
     
     govm_interpreter = Mod->getFunction("vm_interpreter_"+F->getName().str());
 
+    #ifdef XVMP_DEBUG
     errs() << *LogUtils::log_title("xVMPInterpreter finish") << "\n";
+    #endif
 }
 namespace {
 
@@ -1618,6 +1666,135 @@ namespace {
         return false;
     }
 
+    bool supported_scalar(Type *Ty) {
+        if (Ty->isPointerTy())
+            return true;
+        return Ty->isIntegerTy() && Ty->getIntegerBitWidth() <= 64;
+    }
+
+    void check_instruction(Instruction *I, SmallVectorImpl<std::string> &problems) {
+        auto reject = [&](const char *why) {
+            std::string msg = std::string(why) + " (" + I->getOpcodeName() + ")";
+            if (std::find(problems.begin(), problems.end(), msg) == problems.end())
+                problems.push_back(msg);
+        };
+
+        for (Value *Op : I->operand_values()) {
+            if (auto *CE = dyn_cast<ConstantExpr>(Op)) {
+                for (Value *Inner : CE->operand_values()) {
+                    if (isa<ConstantExpr>(Inner)) {
+                        reject("nested constant expression");
+                        return;
+                    }
+                }
+            }
+        }
+
+        if (isa<CastInst>(I)) {
+            if (!supported_scalar(I->getType()) || !supported_scalar(I->getOperand(0)->getType()))
+                reject("unsupported cast type");
+            return;
+        }
+
+        if (isa<BinaryOperator>(I)) {
+            if (!supported_scalar(I->getType()))
+                reject("unsupported binary operator");
+            return;
+        }
+
+        if (isa<ICmpInst>(I)) {
+            if (!supported_scalar(I->getOperand(0)->getType()))
+                reject("unsupported icmp operand type");
+            return;
+        }
+
+        if (isa<AllocaInst>(I)) {
+            if (cast<AllocaInst>(I)->isArrayAllocation())
+                reject("variable-length alloca");
+            return;
+        }
+
+        if (isa<GetElementPtrInst>(I)) {
+            GetElementPtrInst *GEP = cast<GetElementPtrInst>(I);
+            if (isa<StructType>(GEP->getSourceElementType())) {
+                reject("struct gep");
+                return;
+            }
+            if (GEP->getNumIndices() > 2) {
+                reject("multi-index gep");
+                return;
+            }
+            return;
+        }
+
+        if (isa<CallInst>(I)) {
+            CallInst *CI = cast<CallInst>(I);
+            if (CI->isInlineAsm()) {
+                reject("inline asm call");
+                return;
+            }
+            for (unsigned idx = 0; idx < CI->arg_size(); idx++) {
+                Value *Arg = CI->getArgOperand(idx);
+                if (Arg->getType()->isMetadataTy()) {
+                    reject("metadata call argument");
+                    return;
+                }
+                if (isa<GlobalValue>(Arg) && !isa<GlobalVariable>(Arg)) {
+                    reject("function or alias as call argument");
+                    return;
+                }
+            }
+            return;
+        }
+
+        if (isa<BranchInst>(I) || isa<ReturnInst>(I))
+            return;
+
+        if (isa<LoadInst>(I)) {
+            LoadInst *LI = cast<LoadInst>(I);
+            if (LI->isAtomic() || LI->isVolatile())
+                reject("atomic or volatile load");
+            else if (!supported_scalar(I->getType()))
+                reject("unsupported load type");
+            return;
+        }
+
+        if (isa<StoreInst>(I)) {
+            StoreInst *SI = cast<StoreInst>(I);
+            if (SI->isAtomic() || SI->isVolatile())
+                reject("atomic or volatile store");
+            else if (!supported_scalar(I->getOperand(0)->getType()))
+                reject("unsupported store type");
+            return;
+        }
+
+        reject("unsupported instruction");
+    }
+
+    void collect_unsupported(Function *F, SmallVectorImpl<std::string> &problems) {
+        if (F->isVarArg()) {
+            problems.push_back("vararg function");
+        }
+
+        Type *RetTy = F->getReturnType();
+        if (!RetTy->isVoidTy() && !supported_scalar(RetTy)) {
+            problems.push_back("unsupported return type");
+        }
+
+        for (auto &Arg : F->args()) {
+            if (!supported_scalar(Arg.getType())) {
+                problems.push_back("unsupported argument type");
+                break;
+            }
+        }
+
+        for (auto &BB : *F) {
+            for (auto &I : BB) {
+                check_instruction(&I, problems);
+            }
+        }
+    }
+
     bool is_already_virtualized(Function *F) {
         for (BasicBlock &BB : *F) {
             for (Instruction &I : BB) {
@@ -1634,20 +1811,35 @@ namespace {
 }  // end of anonymous namespace
 
 PreservedAnalyses XVMPPass::run(Module &M, ModuleAnalysisManager &) {
+    if (M.getDataLayout().getPointerSize() != 8) {
+        errs() << "xvmp: target pointer size is not 8 bytes, virtualization skipped\n";
+        return PreservedAnalyses::all();
+    }
+
     SmallVector<Function *, 4> candidates;
     for (Function &F : M) {
         if (is_interpreter_function(&F))
             continue;
         if (is_already_virtualized(&F))
             continue;
-        if (toObfuscateFunction(false, &F, "vmp"))
-            candidates.push_back(&F);
+        if (!toObfuscateFunction(false, &F, "vmp"))
+            continue;
+
+        SmallVector<std::string, 4> problems;
+        collect_unsupported(&F, problems);
+        if (!problems.empty()) {
+            errs() << "xvmp: ================================================================\n";
+            errs() << "xvmp: " << F.getName() << " is NOT virtualized, unsupported:\n";
+            for (auto &P : problems)
+                errs() << "xvmp:   " << P << "\n";
+            errs() << "xvmp: ================================================================\n";
+            continue;
+        }
+
+        candidates.push_back(&F);
     }
 
     for (Function *F : candidates) {
-        if (F->isVarArg())
-            continue;
-
         govm_interpreter = nullptr;
         gv_code_seg = nullptr;
         gv_data_seg = nullptr;
@@ -1659,6 +1851,11 @@ PreservedAnalyses XVMPPass::run(Module &M, ModuleAnalysisManager &) {
 
         GOVMInterpreter * interpreter = new GOVMInterpreter(F, translator->get_callinst_handler());
         interpreter->run();
+
+        if (!govm_interpreter) {
+            errs() << "xvmp: interpreter clone failed, " << F->getName() << " is NOT virtualized\n";
+            continue;
+        }
 
         GOVMModifier * modifier = new GOVMModifier(F, translator->get_gv_value_map());
         modifier->run();
