@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(xVMP LANGUAGES CXX)
+project(xVMP LANGUAGES C CXX)
 
 find_package(LLVM REQUIRED CONFIG)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)

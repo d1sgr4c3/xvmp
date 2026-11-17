@@ -5,4 +5,4 @@ CMakeFiles/
 cmake_install.cmake
 Makefile
 libxVMP.so
-manual-build/
+build/

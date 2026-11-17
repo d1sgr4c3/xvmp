@@ -5,8 +5,10 @@ Code virtualization pass plugin for LLVM 21. Forked from [xVMP](https://github.c
 ## Build
 
 ```
-cmake . -DLLVM_DIR=/path/to/llvm-build/lib/cmake/llvm
-make
+mkdir build
+cd build
+cmake .. -DLLVM_DIR=/path/to/llvm-build/lib/cmake/llvm
+make -j$(nproc)
 ```
 
 `LLVM_DIR` points at a built LLVM (directory containing `LLVMConfig.cmake`), not a source checkout.
