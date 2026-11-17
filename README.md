@@ -1,6 +1,6 @@
 # xVMP
 
-Code virtualization pass plugin for LLVM 21.
+Code virtualization pass plugin for LLVM 21. Forked from [xVMP](https://github.com/GANGE666/xVMP)
 
 ## Build
 
