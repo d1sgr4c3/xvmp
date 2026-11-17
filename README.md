@@ -22,7 +22,16 @@ Builds `libxVMP.so`; generates `gen/xvmp_opcodes.h` and `gen/vm.h` (regenerated 
 
 ## Use
 
-Select functions with the `vmp` annotation:
+Selection is annotation-based, function names are irrelevant:
+
+| Annotation | Effect |
+|---|---|
+| `annotate("vmp")` on a function | virtualize this function |
+| `annotate("novmp")` on a function | exclude this function, overrides `vmp` |
+| `annotate("cpp_vmp")` on any function in a module | virtualize the whole module |
+| `annotate("cpp_novmp")` on any function in a module | exclude the whole module |
+
+The virtualized body is replaced with a call to `vm_interpreter_<function>`.
 
 ```c
 #ifdef ENABLE_GOVMP
@@ -33,5 +42,10 @@ uint32_t SECRET(unsigned long input) { ... }
 
 ```
 clang -fpass-plugin=/path/to/libxVMP.so -DENABLE_GOVMP input.c -o out
+```
+
+If you prefer to work with bitcode directly:
+
+```
 opt -load-pass-plugin=/path/to/libxVMP.so -passes=xvmp input.bc
 ```

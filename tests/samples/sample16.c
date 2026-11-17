@@ -15,10 +15,6 @@
 // These vars will contain the hash
 uint32_t h0, h1, h2, h3;
 
-#ifdef ENABLE_OLLVM
-__attribute((__annotate__(("fla"))))
-__attribute((__annotate__(("bcf"))))
-#endif
 #ifdef ENABLE_GOVMP
 __attribute((__annotate__(("vmp"))))
 #endif

@@ -3,15 +3,11 @@
 #include <string.h>
 #include <stdint.h>
 
-#ifdef ENABLE_OLLVM
-__attribute((__annotate__(("fla"))))
-__attribute((__annotate__(("bcf"))))
-#endif
 #ifdef ENABLE_GOVMP
 __attribute((__annotate__(("vmp"))))
 #endif
 uint32_t SECRET(unsigned long input) {
-    printf("%lld\n", input);
+    printf("%lu\n", input);
   return input ^ 0xdeadbeef;
 }
 

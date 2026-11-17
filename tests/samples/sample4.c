@@ -9,10 +9,6 @@
 
 const uint32_t MOD_ADLER = 65521;
 
-#ifdef ENABLE_OLLVM
-__attribute((__annotate__(("fla"))))
-__attribute((__annotate__(("bcf"))))
-#endif
 #ifdef ENABLE_GOVMP
 __attribute((__annotate__(("vmp"))))
 #endif

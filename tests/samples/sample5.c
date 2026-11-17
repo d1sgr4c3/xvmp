@@ -7,10 +7,6 @@
 #include <string.h>
 #include <stdint.h>
 
-#ifdef ENABLE_OLLVM
-__attribute((__annotate__(("fla"))))
-__attribute((__annotate__(("bcf"))))
-#endif
 #ifdef ENABLE_GOVMP
 __attribute((__annotate__(("vmp"))))
 #endif
